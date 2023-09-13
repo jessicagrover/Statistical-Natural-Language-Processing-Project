@@ -1,0 +1,211 @@
+---
+title: "project_stat653"
+format: pdf
+editor: visual
+---
+
+```{r}
+library(dplyr)
+titles <- c("The Picture of Dorian Gray", 
+            "Alice's Adventures in Wonderland",
+            "Dracula", 
+            "The Republic")
+```
+
+Retrieving the text of these four books using the gutenbergr package
+
+```{r}
+library(gutenbergr)
+
+books <- gutenberg_works(title %in% titles) %>%
+  gutenberg_download(meta_fields = "title")
+```
+
+As a pre-processing step, we will break down these books into individual chapters and then use the unnest_tokens() function from the tidytext package to separate the text into individual words. We will also remove commonly occurring stop words from the text. In our analysis, we will treat each chapter of the book as a separate "document".
+
+```{r}
+library(stringr)
+library(tidytext)
+library(tidyr)
+library(topicmodels)
+
+
+
+# divide into documents, each representing one chapter
+by_chapter <- books %>%
+  group_by(title) %>%
+  mutate(chapter = cumsum(str_detect(
+    text, regex("^chapter ", ignore_case = TRUE)
+  ))) %>%
+  ungroup() %>%
+  filter(chapter > 0) %>%
+  unite(document, title, chapter)
+
+# split into words
+by_chapter_word <- by_chapter %>%
+  unnest_tokens(word, text)
+
+# find document-word counts
+word_counts <- by_chapter_word %>%
+  anti_join(stop_words) %>%
+  count(document, word, sort = TRUE)
+
+word_counts
+
+```
+
+LDA on chapters To create a topic model for these four books, we can make use of the LDA() function. Since we have four books, we know that we are looking to create a model with four topics. The LDA() function uses a technique called Latent Dirichlet Allocation (LDA) to identify the underlying topics within a corpus of text. It works by assigning each word in the corpus to a topic and then iteratively refining these assignments until a stable set of topics is identified. By creating a four-topic model, we can identify the key themes and concepts that are present across all four books. This can help us to gain a better understanding of the similarities and differences between the books and provide insights into the underlying themes and ideas that they explore. Overall, the LDA() function is a powerful tool for text analysis and can be used to explore a wide range of textual datasets.
+
+```{r}
+chapters_dtm <- word_counts %>%
+  cast_dtm(document, word, n)
+
+chapters_dtm
+
+```
+
+```{r}
+chapters_lda <- LDA(chapters_dtm, k = 4, control = list(seed = 1234))
+chapters_lda
+#> A LDA_VEM topic model with 4 topics.
+```
+
+Similar to our approach with the Associated Press data, we can analyze the per-topic-per-word probabilities of our topic model for these four books. By examining these probabilities, we can gain insight into the words that are most strongly associated with each topic. This can help us to understand the key themes and concepts that are present within each topic and how they relate to the overall content of the books.
+
+```{r}
+chapter_topics <- tidy(chapters_lda, matrix = "beta")
+chapter_topics
+
+```
+
+After examining the per-topic-per-word probabilities of our topic model, we can observe that the format has been transformed to a one-topic-per-term-per-row format. In this format, the model computes the probability of each term being generated from a particular topic, for all possible combinations of terms and topics. By analyzing these probabilities, we can identify which terms are most strongly associated with each topic and gain a deeper understanding of the themes and concepts that underlie each topic. This can help us to interpret and make sense of the output of our topic model, and gain insights into the patterns and relationships that exist within our corpus of text.
+
+```{r}
+top_terms <- chapter_topics %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 5) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+top_terms
+
+```
+
+To identify the top 5 terms associated with each topic, we can use the slice_max() function from the dplyr package. This function allows us to slice the data frame to return the rows with the highest values of a specified variable, in our case the per-topic-per-term probabilities. By using slice_max() with a grouping variable for each topic, we can extract the top 5 terms associated with each topic.
+
+```{r}
+library(ggplot2)
+
+top_terms %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+```{r}
+chapters_gamma <- tidy(chapters_lda, matrix = "gamma")
+chapters_gamma
+```
+
+The function "tidy()" is utilized to extract or modify the matrix containing document-topic distribution, and the resultant "chapters_gamma" variable includes the relevant data for subsequent examination or display.
+
+```{r}
+chapters_gamma <- chapters_gamma %>%
+  separate(document, c("title", "chapter"), sep = "_", convert = TRUE)
+
+chapters_gamma
+```
+
+The provided code is capable of dividing a singular column within a data frame into two distinct columns, based on a designated separator. The updated data frame is then saved in the same variable, allowing for enhanced organization and analysis of combined data residing within a single column.
+
+```{r}
+chapters_gamma %>%
+  mutate(title = reorder(title, gamma * topic)) %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ title) +
+  labs(x = "topic", y = expression(gamma))
+```
+
+The code is designed to generate a boxplot representation depicting the distribution of topics within each title of the provided data frame. This visualization enables the examination of the comparative predominance of various topics within each document.
+
+```{r}
+chapter_classifications <- chapters_gamma %>%
+  group_by(title, chapter) %>%
+  slice_max(gamma) %>%
+  ungroup()
+
+chapter_classifications
+```
+
+The given code extracts the primary topic classification for every chapter in all titles featured in the "chapters_gamma" data frame. This information aids in identifying the predominant subjects and themes present in each document.
+
+```{r}
+book_topics <- chapter_classifications %>%
+  count(title, topic) %>%
+  group_by(title) %>%
+  slice_max(n, n = 1) %>%
+  ungroup() %>%
+  transmute(consensus = title, topic)
+
+chapter_classifications %>%
+  inner_join(book_topics, by = "topic") %>%
+  filter(title != consensus)
+```
+
+The provided code is utilized to detect the chapters within the data frame that possess a dissimilar topic classification compared to the general topic consensus for each book. This analysis can assist in identifying sections of potential discord or disparity within the thematic content of each book.
+
+```{r}
+assignments <- augment(chapters_lda, data = chapters_dtm)
+assignments
+```
+
+The given code is used to calculate the topic assignments for all documents contained in the LDA model, utilizing the document-term matrix. This process facilitates the examination of topic distribution throughout the corpus, thereby enabling the identification of patterns pertaining to the thematic content of the documents.
+
+```{r}
+assignments <- assignments %>%
+  separate(document, c("title", "chapter"),
+           sep = "_", convert = TRUE) %>%
+  inner_join(book_topics, by = c(".topic" = "topic"))
+
+assignments
+```
+
+The presented code performs the separation of the title and chapter data from the "document" column of the assignments data frame, assigning them as distinct columns. It subsequently incorporates a new "consensus" column in the "assignments" data frame, based on the prevalent topic for each book. This feature allows for the exploration of topic distribution throughout the corpus, thereby aiding in the identification of trends in the thematic content of the books and chapters.
+
+```{r}
+library(scales)
+
+assignments %>%
+  count(title, consensus, wt = count) %>%
+  mutate(across(c(title, consensus), ~str_wrap(., 20))) %>%
+  group_by(title) %>%
+  mutate(percent = n / sum(n)) %>%
+  ggplot(aes(consensus, title, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "darkred", label = percent_format()) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        panel.grid = element_blank()) +
+  labs(x = "Book words were assigned to",
+       y = "Book words came from",
+       fill = "% of assignments")
+```
+
+The given code produces a heatmap representation of the topic assignments associated with each book present in the corpus. This visualization enables the observation of topic distribution throughout the books, allowing for the detection of patterns within the thematic content of the corpus.
+
+```{r}
+wrong_words <- assignments %>%
+  filter(title != consensus)
+
+wrong_words
+```
+
+```{r}
+wrong_words %>%
+  count(title, consensus, term, wt = count) %>%
+  ungroup() %>%
+  arrange(desc(n))
+```
